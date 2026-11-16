@@ -1,6 +1,6 @@
 // Dữ liệu v3.2: 8 Avatar ảnh hội bạn + 24 Icon, 11 Role Ma Sói, bộ từ khóa & câu hỏi Gián Điệp
 window.GameData = (() => {
-  const APP_VERSION = 'v3.2';
+  const APP_VERSION = 'v3.3';
 
   const PLAYER_AVATARS = [
     { id: 'friend_1', img: 'assets/avatars/friend_1.jpg', emoji: '🦇', label: 'Thành viên 1', bg: 'linear-gradient(135deg,#ec4899,#8b5cf6)' },

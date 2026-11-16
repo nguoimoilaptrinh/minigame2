@@ -1,4 +1,4 @@
-# 🌙 Ma Sói — Hội Quán Party Game (v3.2)
+# 🌙 Ma Sói — Hội Quán Party Game (v3.3)
 
 Ứng dụng web chơi nhóm **5–10 người** tại nhà — **tất cả mọi người đều là người chơi**, Bot làm Quản Trò, **miễn phí 100%** khi đăng lên **GitHub Pages**. Gồm 2 game: **Ma Sói** và **Gián Điệp**.
 
@@ -6,7 +6,17 @@
 
 ---
 
-## ✨ Có gì mới ở v3.2
+## ✨ Có gì mới ở v3.3
+
+- **⚙️ Cài đặt ván** (phòng chờ của máy Quản Trò, dưới phần cấu hình vai trò — nhớ lại cho các ván sau, nút *Mặc định* để trả về ban đầu):
+  - **⏰ Giới hạn thời gian bỏ phiếu ban ngày**: Không giới hạn *(mặc định)* / 1 / 1,5 / 2 / 3 / 5 phút. Hết giờ Bot chốt theo phiếu hiện có; còn 30 giây Bot nhắc; đồng hồ hiện trên laptop và điện thoại.
+  - **🤝 Khi hòa phiếu**: bỏ phiếu lại 1 lần *(mặc định)* hoặc không ai bị treo cổ.
+  - **⚖️ Chốt phiếu**: tự chốt khi mọi người đã vote *(mặc định)* hoặc Quản Trò tự bấm chốt.
+  - **🌙 Nhịp đêm**: Nhanh / Vừa *(mặc định)* / Chậm.
+- **Đêm khó đoán hơn**: vai đã chết (hoặc bot thử nghiệm) giờ "suy nghĩ" một khoảng ngẫu nhiên 5–15 giây (tùy vai) thay vì 2–7 giây cố định; người còn sống bấm quá nhanh cũng phải chờ tối thiểu một nhịp — không còn đoán được vai nào đã chết nhờ tốc độ Bot chuyển lượt.
+- **Lật thẻ không còn tiếng động** (Ma Sói lẫn Gián Điệp) để không lộ ai đang xem vai.
+
+## Có gì mới ở v3.2
 
 ### 🚪 Một phòng cố định — luôn vào lại được
 - **Không còn mã phòng 4 số.** Laptop bấm *Mở phòng*, điện thoại mở app bấm **Vào phòng** là xong.

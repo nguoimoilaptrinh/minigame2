@@ -25,6 +25,7 @@ window.WerewolfGame = (() => {
   let peekTimer = null;
   let selectedHunterTarget = null;
   let clientVoteLockEnd = 0;
+  let clientDayDeadlineEnd = 0;
   let playerTickTimer = null;
   let hostTickTimer = null;
   let lastReceivedSeq = -1;
@@ -64,6 +65,71 @@ window.WerewolfGame = (() => {
     serial_killer: 'Sát Nhân Độc Hành',
     hunter: 'Thợ Săn'
   };
+
+  // ==================== CÀI ĐẶT VÁN (máy Quản Trò) ====================
+  // Mặc định giữ nguyên hành vi cũ: không giới hạn giờ vote, hòa thì vote lại 1 lần, tự chốt khi mọi người đã vote.
+  const SETTINGS_KEY = 'hq_ww_settings';
+  const DEFAULT_SETTINGS = { voteTimeLimit: 0, tieRule: 'revote', autoVoteLock: true, nightPace: 'normal' };
+  const VOTE_TIME_OPTIONS = [0, 60, 90, 120, 180, 300]; // giây; 0 = không giới hạn
+  const TIE_RULES = ['revote', 'none'];
+  // mul: nhân thời gian "giả vờ suy nghĩ" của vai đã chết; floor: thời gian tối thiểu của MỘT lượt đêm (kể cả người sống bấm rất nhanh).
+  const NIGHT_PACE = {
+    fast: { mul: 0.6, floorMs: 4500, label: 'Nhanh' },
+    normal: { mul: 1, floorMs: 7500, label: 'Vừa' },
+    slow: { mul: 1.5, floorMs: 11000, label: 'Chậm' }
+  };
+  // Khoảng thời gian (ms, sau khi Bot đọc xong lời gọi) mà Bot "chờ" khi vai đó đã chết / là bot thử nghiệm.
+  const FAKE_ACT_RANGE = {
+    cupid: [5500, 10000],
+    guard: [5000, 10500],
+    werewolf: [8000, 15000],
+    alpha_wolf: [4500, 8500],
+    seer: [5500, 11000],
+    witch: [7000, 13500],
+    serial_killer: [5500, 10500]
+  };
+
+  function normalizeSettings(raw) {
+    const s = raw && typeof raw === 'object' ? raw : {};
+    const limit = Number(s.voteTimeLimit);
+    return {
+      voteTimeLimit: VOTE_TIME_OPTIONS.includes(limit) ? limit : DEFAULT_SETTINGS.voteTimeLimit,
+      tieRule: TIE_RULES.includes(s.tieRule) ? s.tieRule : DEFAULT_SETTINGS.tieRule,
+      autoVoteLock: s.autoVoteLock === false ? false : true,
+      nightPace: NIGHT_PACE[s.nightPace] ? s.nightPace : DEFAULT_SETTINGS.nightPace
+    };
+  }
+
+  function loadSettings() {
+    try {
+      return normalizeSettings(JSON.parse(lsGet(SETTINGS_KEY) || 'null'));
+    } catch (_) {
+      return normalizeSettings(null);
+    }
+  }
+
+  function saveSettings() {
+    if (state && state.settings) lsSet(SETTINGS_KEY, JSON.stringify(state.settings));
+  }
+
+  function settingsOfState(s) {
+    return normalizeSettings(s && s.settings);
+  }
+
+  function settingsOf() {
+    return (state && state.settings) || DEFAULT_SETTINGS;
+  }
+
+  function paceCfg() {
+    return NIGHT_PACE[settingsOf().nightPace] || NIGHT_PACE.normal;
+  }
+
+  // Thời gian chờ ngẫu nhiên (hơi dồn về giữa khoảng) cho vai đã chết/bot thử nghiệm — để không lộ ai còn sống.
+  function fakeActDelay(step) {
+    const [lo, hi] = FAKE_ACT_RANGE[step] || [5000, 10000];
+    const r = (Math.random() + Math.random()) / 2;
+    return Math.round((lo + (hi - lo) * r) * paceCfg().mul);
+  }
 
   // ==================== HELPERS ====================
   function isWolfRole(roleId) {
@@ -196,6 +262,8 @@ window.WerewolfGame = (() => {
       voteLock: null, // { endsAt, kind: 'lynch'|'skip', targetId } — đếm ngược tự chốt phiếu
       voteLockPaused: false,
       revoteUsed: false,
+      settings: loadSettings(), // cài đặt ván do Quản Trò chọn (nhớ lại cho các ván sau)
+      dayDeadline: null, // { endsAt, warned } — hạn chót bỏ phiếu ban ngày (khi bật giới hạn giờ)
       stepWatch: null, // { key, startedAt, level } — nhắc người chơi chưa thao tác
       queuedHunterShot: null, // { hunterId, targetId } — phát bắn tới sớm khi Bot còn đang đọc
       pendingHunterId: null,
@@ -230,6 +298,11 @@ window.WerewolfGame = (() => {
       dayVotes: s.dayVotes,
       gameNo: s.gameNo || 0,
       revoteUsed: Boolean(s.revoteUsed),
+      settings: { voteTimeLimit: settingsOfState(s).voteTimeLimit, tieRule: settingsOfState(s).tieRule },
+      dayDeadline:
+        s.dayDeadline && s.phase === 'DAY' && s.flow && s.flow.key === 'day'
+          ? { remainingMs: Math.max(0, s.dayDeadline.endsAt - Date.now()) }
+          : null,
       voteLock:
         s.voteLock && s.phase === 'DAY'
           ? {
@@ -556,6 +629,7 @@ window.WerewolfGame = (() => {
       state = { ...createInitialHostState(), ...snap.state };
       if (!state.epoch) state.epoch = newEpoch();
       state.nightActions = { ...createNightActions(), ...(state.nightActions || {}) };
+      state.settings = normalizeSettings(state.settings || loadSettings());
       state.roomCode = window.RoomNetwork.ROOM_ID;
       autoRolesMode = snap.autoRolesMode !== false;
       demoCounter = snap.demoCounter || 1;
@@ -864,6 +938,88 @@ window.WerewolfGame = (() => {
     state.voteLockPaused = false;
     state.revoteUsed = false;
     state.dayVotes = {};
+    state.dayDeadline = null;
+    ['dayDeadline', 'dayWarn'].forEach((k) => {
+      if (timers[k]) {
+        clearTimeout(timers[k]);
+        delete timers[k];
+      }
+    });
+  }
+
+  // ----- Hạn chót bỏ phiếu ban ngày (chỉ khi Quản Trò bật "giới hạn thời gian") -----
+  const DAY_WARN_MS = 30000;
+  const DAY_RESUME_GRACE_MS = 20000;
+
+  function armDayDeadline({ resumed = false } = {}) {
+    if (!state || !isHost || state.phase !== 'DAY' || !state.flow || state.flow.key !== 'day') return;
+    const limit = Number(settingsOf().voteTimeLimit) || 0;
+    if (!limit) {
+      state.dayDeadline = null;
+      return;
+    }
+    if (!state.dayDeadline) state.dayDeadline = { endsAt: Date.now() + limit * 1000, warned: false };
+    // Host vừa nối lại mà hạn đã trôi qua: cho thêm một khoảng ngắn để cả làng kịp bỏ phiếu.
+    if (resumed && state.dayDeadline.endsAt < Date.now() + DAY_RESUME_GRACE_MS) {
+      state.dayDeadline.endsAt = Date.now() + DAY_RESUME_GRACE_MS;
+    }
+    const endsAt = state.dayDeadline.endsAt;
+    persistHost();
+    armTimer('dayDeadline', endsAt - Date.now(), () => {
+      const cur = state.dayDeadline;
+      if (!cur || cur.endsAt !== endsAt || state.phase !== 'DAY' || !state.flow || state.flow.key !== 'day') return;
+      onDayDeadline();
+    });
+    if (limit >= 90 && !state.dayDeadline.warned) {
+      armTimer('dayWarn', endsAt - DAY_WARN_MS - Date.now(), () => {
+        const cur = state.dayDeadline;
+        if (!cur || cur.endsAt !== endsAt || state.phase !== 'DAY' || !state.flow || state.flow.key !== 'day') return;
+        cur.warned = true;
+        persistHost();
+        setBotSpeech('Chỉ còn 30 giây nữa là hết giờ bỏ phiếu! Ai chưa bỏ phiếu thì nhanh tay lên!');
+      });
+    }
+  }
+
+  // Hết giờ: chốt theo phiếu hiện có (người chưa bỏ phiếu coi như không tham gia).
+  function onDayDeadline() {
+    if (!state || !isHost || state.phase !== 'DAY' || !state.flow || state.flow.key !== 'day') return;
+    state.dayDeadline = null;
+    cancelVoteLock();
+    const tally = getDayVoteTally();
+    addLog('⏰ Hết giờ bỏ phiếu — chốt theo phiếu hiện có.', { icon: '⏰' });
+
+    if (!tally.leaderId) {
+      skipLynchToNight();
+      return;
+    }
+    if (tally.isTie) {
+      if (settingsOf().tieRule === 'revote' && !state.revoteUsed) startRevote(tally);
+      else skipLynchToNight();
+      return;
+    }
+    if (tally.leaderId === '__skip__') {
+      skipLynchToNight();
+      return;
+    }
+    if (byId(tally.leaderId) && byId(tally.leaderId).alive) lynchPlayer(tally.leaderId);
+    else skipLynchToNight();
+  }
+
+  // Hòa phiếu lần đầu: cả làng bỏ phiếu lại một lần (đồng hồ giới hạn, nếu có, chạy lại từ đầu).
+  function startRevote(tally) {
+    cancelVoteLock();
+    state.revoteUsed = true;
+    const names = tiedNames(tally);
+    state.dayVotes = {};
+    state.voteLockPaused = false;
+    state.dayDeadline = null;
+    addLog(`Hòa phiếu giữa ${joinNames(names)} — cả làng bỏ phiếu lại.`, { icon: '🤝' });
+    window.AudioEngine.playVoteGavel();
+    setBotSpeech(
+      `Hòa phiếu giữa ${joinNames(names)}! Mọi người thảo luận thêm và bỏ phiếu lại — lần này hòa nữa thì không ai bị treo cổ.`
+    );
+    armDayDeadline();
   }
 
   function armVoteLockTimer() {
@@ -894,6 +1050,11 @@ window.WerewolfGame = (() => {
       if (state.voteLock) cancelVoteLock();
       return;
     }
+    // Quản Trò tắt "tự chốt khi mọi người đã vote": chỉ chốt khi bấm nút hoặc hết giờ.
+    if (settingsOf().autoVoteLock === false) {
+      if (state.voteLock) cancelVoteLock();
+      return;
+    }
     if (state.voteLockPaused) return;
 
     const tally = getDayVoteTally();
@@ -903,22 +1064,13 @@ window.WerewolfGame = (() => {
     let targetId = null;
     let text;
 
-    if (tally.isTie && !state.revoteUsed) {
-      // Hòa lần đầu: bỏ phiếu lại một lần.
-      cancelVoteLock();
-      state.revoteUsed = true;
-      const names = tiedNames(tally);
-      state.dayVotes = {};
-      addLog(`Hòa phiếu giữa ${joinNames(names)} — cả làng bỏ phiếu lại.`, { icon: '🤝' });
-      window.AudioEngine.playVoteGavel();
-      setBotSpeech(
-        `Hòa phiếu giữa ${joinNames(names)}! Mọi người thảo luận thêm và bỏ phiếu lại — lần này hòa nữa thì không ai bị treo cổ.`
-      );
+    if (tally.isTie && !state.revoteUsed && settingsOf().tieRule === 'revote') {
+      startRevote(tally); // Hòa lần đầu: bỏ phiếu lại một lần.
       return;
     }
     if (tally.isTie) {
       kind = 'skip';
-      text = 'Hòa phiếu lần nữa! Hôm nay không ai bị treo cổ. Bot sẽ chuyển sang đêm sau 8 giây — ai muốn đổi phiếu thì đổi ngay!';
+      text = `Hòa phiếu${state.revoteUsed ? ' lần nữa' : ''}! Hôm nay không ai bị treo cổ. Bot sẽ chuyển sang đêm sau 8 giây — ai muốn đổi phiếu thì đổi ngay!`;
     } else if (tally.leaderId === '__skip__') {
       kind = 'skip';
       text = 'Đa số bỏ phiếu trắng! Hôm nay không ai bị treo cổ. Bot sẽ chuyển sang đêm sau 8 giây — ai muốn đổi phiếu thì đổi ngay!';
@@ -992,6 +1144,15 @@ window.WerewolfGame = (() => {
       secret: true,
       phase: 'setup'
     });
+    const st = settingsOf();
+    if (JSON.stringify(st) !== JSON.stringify(DEFAULT_SETTINGS)) {
+      const parts = [];
+      if (st.voteTimeLimit) parts.push(`giới hạn bỏ phiếu ${st.voteTimeLimit} giây`);
+      if (st.tieRule === 'none') parts.push('hòa phiếu thì không ai bị treo cổ');
+      if (!st.autoVoteLock) parts.push('Quản Trò tự bấm chốt phiếu');
+      if (st.nightPace !== 'normal') parts.push(`nhịp đêm ${NIGHT_PACE[st.nightPace].label.toLowerCase()}`);
+      addLog(`Cài đặt ván: ${parts.join('; ')}.`, { icon: '⚙️', phase: 'setup' });
+    }
     setFlow('role_reveal');
     syncStateToClients();
     state.players.forEach((p) => {
@@ -1051,6 +1212,7 @@ window.WerewolfGame = (() => {
 
   function advanceNightStep() {
     clearHostTimers();
+    skipStepFloorOnce = false;
     if (!state || state.phase !== 'NIGHT') return;
 
     const order = getActiveNightOrder();
@@ -1231,18 +1393,30 @@ window.WerewolfGame = (() => {
   }
 
   // Kết thúc một bước đêm: Bot đọc lời "nhắm mắt lại" rồi sang bước kế tiếp.
+  // Mỗi lượt đêm kéo dài tối thiểu `floorMs` kể từ lúc Bot gọi vai đó: người còn sống bấm quá nhanh
+  // cũng không "nhanh hơn" vai đã chết (vốn đợi một khoảng ngẫu nhiên) — không ai đoán được vai nào còn sống.
+  let skipStepFloorOnce = false;
+
   function closeNightStep(text) {
     setFlow('night_step_done');
-    setBotSpeech(text, () => {
-      hostStepTimer = setTimeout(() => advanceNightStep(), 900);
-    });
+    const startedAt = (state.stepWatch && state.stepWatch.startedAt) || 0;
+    const wait = skipStepFloorOnce ? 0 : Math.max(0, startedAt + paceCfg().floorMs - Date.now());
+    skipStepFloorOnce = false;
+    const speakClose = () => {
+      if (!state || state.phase !== 'NIGHT' || !state.flow || state.flow.key !== 'night_step_done') return;
+      setBotSpeech(text, () => {
+        hostStepTimer = setTimeout(() => advanceNightStep(), 900 + Math.round(Math.random() * 700));
+      });
+    };
+    if (wait > 0) hostStepTimer = setTimeout(speakClose, wait);
+    else speakClose();
   }
 
   function runCupidStep() {
     const aliveCupid = state.players.find((p) => p.alive && p.roleId === 'cupid');
     setBotSpeech('Thần Tình Yêu ơi, hãy mở mắt dậy và chọn 2 người để ghép thành Cặp Đôi Tình Nhân!', () => {
       if (!aliveCupid) {
-        hostStepTimer = setTimeout(() => finishCupidStep([]), 3200);
+        hostStepTimer = setTimeout(() => finishCupidStep([]), fakeActDelay('cupid'));
       } else if (aliveCupid.isDemo) {
         const pool = [...state.players].filter((p) => p.alive);
         for (let i = pool.length - 1; i > 0; i--) {
@@ -1250,7 +1424,7 @@ window.WerewolfGame = (() => {
           [pool[i], pool[j]] = [pool[j], pool[i]];
         }
         const pair = pool.length >= 2 ? [pool[0].id, pool[1].id] : [];
-        hostStepTimer = setTimeout(() => finishCupidStep(pair), 1600);
+        hostStepTimer = setTimeout(() => finishCupidStep(pair), fakeActDelay('cupid'));
       }
     });
   }
@@ -1285,11 +1459,11 @@ window.WerewolfGame = (() => {
     const aliveGuard = state.players.find((p) => p.alive && p.roleId === 'guard');
     setBotSpeech('Bảo Vệ ơi, hãy mở mắt dậy và chọn một người để bảo vệ đêm nay.', () => {
       if (!aliveGuard) {
-        hostStepTimer = setTimeout(() => finishGuardStep(null), 5000 + Math.random() * 2000);
+        hostStepTimer = setTimeout(() => finishGuardStep(null), fakeActDelay('guard'));
       } else if (aliveGuard.isDemo) {
         const candidates = state.players.filter((p) => p.alive && p.id !== state.lastGuardedId);
         const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        hostStepTimer = setTimeout(() => finishGuardStep(pick ? pick.id : null), 1600);
+        hostStepTimer = setTimeout(() => finishGuardStep(pick ? pick.id : null), fakeActDelay('guard'));
       }
     });
   }
@@ -1314,11 +1488,11 @@ window.WerewolfGame = (() => {
     setBotSpeech('Ma Sói ơi, hãy mở mắt dậy và chọn con mồi đêm nay!', () => {
       if (wolves.length === 0) {
         // Hết Sói nhưng ván vẫn tiếp diễn (còn Sát Nhân): giả vờ gọi cho đủ nhịp rồi sang bước kế.
-        hostStepTimer = setTimeout(() => finishWerewolfStep(null), 5000 + Math.random() * 2000);
+        hostStepTimer = setTimeout(() => finishWerewolfStep(null), fakeActDelay('werewolf'));
       } else if (wolves.every((w) => w.isDemo)) {
         const prey = state.players.filter((p) => p.alive && !isWolfRole(p.roleId));
         const pick = prey[Math.floor(Math.random() * prey.length)];
-        hostStepTimer = setTimeout(() => finishWerewolfStep(pick ? pick.id : null), 1800);
+        hostStepTimer = setTimeout(() => finishWerewolfStep(pick ? pick.id : null), fakeActDelay('werewolf'));
       }
     });
   }
@@ -1358,9 +1532,9 @@ window.WerewolfGame = (() => {
     }
     setBotSpeech('Sói Đầu Đàn ơi, bạn có muốn dùng quyền Nguyền biến nạn nhân đêm nay thành Ma Sói không?', () => {
       if (!aliveAlpha || state.alphaWolfConvertUsed || !state.nightActions.wolfTarget) {
-        hostStepTimer = setTimeout(() => finishAlphaWolfStep(false), 2600);
+        hostStepTimer = setTimeout(() => finishAlphaWolfStep(false), fakeActDelay('alpha_wolf'));
       } else if (aliveAlpha.isDemo) {
-        hostStepTimer = setTimeout(() => finishAlphaWolfStep(false), 1600);
+        hostStepTimer = setTimeout(() => finishAlphaWolfStep(false), fakeActDelay('alpha_wolf'));
       }
     });
   }
@@ -1385,9 +1559,9 @@ window.WerewolfGame = (() => {
     armSeerSafety();
     setBotSpeech('Tiên Tri ơi, hãy mở mắt dậy và chọn một người để soi thân phận.', () => {
       if (!aliveSeer) {
-        hostStepTimer = setTimeout(() => finishSeerStep(), 5000 + Math.random() * 2000);
+        hostStepTimer = setTimeout(() => finishSeerStep(), fakeActDelay('seer'));
       } else if (aliveSeer.isDemo) {
-        hostStepTimer = setTimeout(() => finishSeerStep(), 1600);
+        hostStepTimer = setTimeout(() => finishSeerStep(), fakeActDelay('seer'));
       }
     });
   }
@@ -1407,9 +1581,9 @@ window.WerewolfGame = (() => {
     }
     setBotSpeech('Phù Thủy ơi, hãy mở mắt dậy để sử dụng bình thuốc của mình.', () => {
       if (!aliveWitch) {
-        hostStepTimer = setTimeout(() => finishWitchStep(false, null), 5000 + Math.random() * 2000);
+        hostStepTimer = setTimeout(() => finishWitchStep(false, null), fakeActDelay('witch'));
       } else if (aliveWitch.isDemo) {
-        hostStepTimer = setTimeout(() => finishWitchStep(false, null), 1600);
+        hostStepTimer = setTimeout(() => finishWitchStep(false, null), fakeActDelay('witch'));
       }
     });
   }
@@ -1451,11 +1625,11 @@ window.WerewolfGame = (() => {
     const aliveSK = state.players.find((p) => p.alive && p.roleId === 'serial_killer');
     setBotSpeech('Sát Nhân Độc Hành ơi, hãy mở mắt dậy và chọn 1 mục tiêu để ám sát đêm nay.', () => {
       if (!aliveSK) {
-        hostStepTimer = setTimeout(() => finishSerialKillerStep(null), 3500);
+        hostStepTimer = setTimeout(() => finishSerialKillerStep(null), fakeActDelay('serial_killer'));
       } else if (aliveSK.isDemo) {
         const candidates = state.players.filter((p) => p.alive && p.id !== aliveSK.id);
         const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        hostStepTimer = setTimeout(() => finishSerialKillerStep(pick ? pick.id : null), 1600);
+        hostStepTimer = setTimeout(() => finishSerialKillerStep(pick ? pick.id : null), fakeActDelay('serial_killer'));
       }
     });
   }
@@ -1754,7 +1928,12 @@ window.WerewolfGame = (() => {
       return;
     }
     setFlow('day');
-    if (!checkWinCondition()) evaluateDayVotes(); // mọi người có thể đã vote xong trong lúc Bot đọc thông báo
+    if (!checkWinCondition()) {
+      armDayDeadline();
+      evaluateDayVotes(); // mọi người có thể đã vote xong trong lúc Bot đọc thông báo
+      syncStateToClients(); // đẩy hạn chót bỏ phiếu xuống điện thoại
+      renderHost();
+    }
   }
 
   function triggerHunterPrompt() {
@@ -1834,6 +2013,7 @@ window.WerewolfGame = (() => {
       resetDayVoteState();
       voteAllAnnounced = false;
       setFlow('day');
+      armDayDeadline();
       syncStateToClients();
       renderHost();
     }
@@ -1912,6 +2092,7 @@ window.WerewolfGame = (() => {
     state.pendingHunterId = null;
     state.hunterQueue = [];
     cancelVoteLock();
+    state.dayDeadline = null;
     state.queuedHunterShot = null;
     addLog(winMsg, { icon, phase: 'end' });
     saveLastGame();
@@ -2106,6 +2287,8 @@ window.WerewolfGame = (() => {
         speechPrefix = '';
         setBotSpeech('Bot Quản Trò đã quay lại, ván đấu tiếp tục! Mời cả làng tiếp tục thảo luận và bỏ phiếu.');
         armVoteLockTimer(); // đếm ngược 8 giây (nếu đang chạy) được dựng lại từ endsAt đã lưu
+        armDayDeadline({ resumed: true }); // hạn chót bỏ phiếu cũng dựng lại từ mốc đã lưu
+        syncStateToClients();
         break;
       case 'game_over':
       case 'lobby':
@@ -2168,6 +2351,7 @@ window.WerewolfGame = (() => {
 
       // Đếm ngược chốt phiếu: tính mốc kết thúc theo đồng hồ máy này.
       clientVoteLockEnd = state.voteLock ? Date.now() + (Number(state.voteLock.remainingMs) || 0) : 0;
+      clientDayDeadlineEnd = state.dayDeadline ? Date.now() + (Number(state.dayDeadline.remainingMs) || 0) : 0;
 
       if (state.phase === 'NIGHT' && (prevPhase !== 'NIGHT' || prevStep !== state.nightStep)) {
         selectedNightTarget = null;
@@ -2420,6 +2604,7 @@ window.WerewolfGame = (() => {
 
     document.getElementById('ww-host-skip-step').onclick = () => {
       if (!state || state.phase !== 'NIGHT' || state.flow.key !== 'night_step') return;
+      skipStepFloorOnce = true; // Quản Trò chủ động bỏ qua: không bắt chờ thêm
       if (state.nightStep === 'cupid') finishCupidStep([]);
       else if (state.nightStep === 'guard') finishGuardStep(null);
       else if (state.nightStep === 'werewolf') {
@@ -2651,6 +2836,90 @@ window.WerewolfGame = (() => {
     }
   }
 
+  // ----- Bảng "Cài đặt ván" trong phòng chờ (giống phòng tùy chỉnh của Wolvesville) -----
+  function changeSetting(patch) {
+    if (!state || !isHost || state.phase !== 'LOBBY') return;
+    state.settings = normalizeSettings({ ...settingsOf(), ...patch });
+    saveSettings();
+    persistHost();
+    syncStateToClients();
+    renderHost();
+  }
+
+  function renderHostSettings() {
+    const box = document.getElementById('ww-host-settings');
+    if (!box) return;
+    const cur = settingsOf();
+    const voteLabel = (sec) => {
+      if (!sec) return 'Không giới hạn';
+      if (sec % 60 === 0) return `${sec / 60} phút`;
+      return `${Math.floor(sec / 60)},5 phút`;
+    };
+    const rows = [
+      {
+        title: '⏰ Giới hạn thời gian bỏ phiếu ban ngày',
+        hint: 'Hết giờ, Bot tự chốt theo phiếu hiện có (ai chưa vote coi như bỏ qua). Mặc định: không giới hạn.',
+        options: VOTE_TIME_OPTIONS.map((v) => ({ label: voteLabel(v), on: cur.voteTimeLimit === v, patch: { voteTimeLimit: v } }))
+      },
+      {
+        title: '🤝 Khi hòa phiếu',
+        hint: 'Mặc định: bỏ phiếu lại một lần, hòa nữa thì không ai bị treo cổ.',
+        options: [
+          { label: 'Bỏ phiếu lại 1 lần', on: cur.tieRule === 'revote', patch: { tieRule: 'revote' } },
+          { label: 'Không ai bị treo cổ', on: cur.tieRule === 'none', patch: { tieRule: 'none' } }
+        ]
+      },
+      {
+        title: '⚖️ Chốt phiếu',
+        hint: 'Mặc định: khi mọi người đã vote, Bot đếm ngược 8 giây rồi tự chốt.',
+        options: [
+          { label: 'Tự chốt khi vote xong', on: cur.autoVoteLock, patch: { autoVoteLock: true } },
+          { label: 'Quản Trò tự bấm chốt', on: !cur.autoVoteLock, patch: { autoVoteLock: false } }
+        ]
+      },
+      {
+        title: '🌙 Nhịp đêm',
+        hint: 'Bot chờ ngẫu nhiên một lúc ở mỗi lượt, kể cả khi vai đó đã chết — để không ai đoán ra ai còn sống.',
+        options: Object.entries(NIGHT_PACE).map(([key, cfg]) => ({
+          label: cfg.label,
+          on: cur.nightPace === key,
+          patch: { nightPace: key }
+        }))
+      }
+    ];
+
+    box.innerHTML = '';
+    rows.forEach((row) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'setting-row';
+      const title = document.createElement('strong');
+      title.textContent = row.title;
+      const seg = document.createElement('div');
+      seg.className = 'seg';
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', row.title);
+      row.options.forEach((opt) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = `seg-btn${opt.on ? ' is-on' : ''}`;
+        b.textContent = opt.label;
+        b.setAttribute('aria-pressed', String(opt.on));
+        b.addEventListener('click', () => changeSetting(opt.patch));
+        seg.appendChild(b);
+      });
+      const hint = document.createElement('small');
+      hint.textContent = row.hint;
+      wrap.append(title, seg, hint);
+      box.appendChild(wrap);
+    });
+
+    const resetBtn = document.getElementById('ww-host-settings-reset');
+    if (resetBtn) {
+      resetBtn.onclick = () => changeSetting({ ...DEFAULT_SETTINGS });
+      resetBtn.hidden = JSON.stringify(cur) === JSON.stringify(DEFAULT_SETTINGS);
+    }
+  }
+
   function renderHostLobby() {
     const count = state.players.length;
     const readyCount = state.players.filter((p) => p.ready).length;
@@ -2774,6 +3043,8 @@ window.WerewolfGame = (() => {
       configEl.appendChild(row);
     });
 
+    renderHostSettings();
+
     const totalNote = document.getElementById('ww-host-role-total');
     const wolves = (state.rolesConfig.werewolf || 0) + (state.rolesConfig.alpha_wolf || 0);
     const villagersSide = totalRoles - wolves;
@@ -2809,33 +3080,63 @@ window.WerewolfGame = (() => {
     return `⏳ Không ai bị treo cổ — sang đêm sau ${left} giây…`;
   }
 
+  function formatClock(totalSeconds) {
+    const s = Math.max(0, Math.ceil(totalSeconds));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  function hostDeadlineText() {
+    const dd = state && state.dayDeadline;
+    if (!dd) return '';
+    const left = (dd.endsAt - Date.now()) / 1000;
+    return `⏰ Hết giờ bỏ phiếu sau ${formatClock(left)}${state.revoteUsed ? ' (vòng bỏ phiếu lại)' : ''}`;
+  }
+
   function syncHostCountdown() {
     const el = document.getElementById('ww-host-vote-countdown');
     const cancel = document.getElementById('ww-host-vote-cancel');
+    const dayEl = document.getElementById('ww-host-day-timer');
     if (!el) return;
-    const active = Boolean(state && state.phase === 'DAY' && state.voteLock);
+    const inDay = Boolean(state && state.phase === 'DAY');
+    const active = Boolean(inDay && state.voteLock);
+    const deadlineActive = Boolean(inDay && state.dayDeadline && state.flow && state.flow.key === 'day');
+    if (dayEl) {
+      dayEl.hidden = !deadlineActive;
+      if (deadlineActive) {
+        dayEl.textContent = hostDeadlineText();
+        dayEl.classList.toggle('is-urgent', state.dayDeadline.endsAt - Date.now() <= 30000);
+      }
+    }
     if (active) {
       el.hidden = false;
       el.textContent = hostCountdownText();
       if (cancel) cancel.hidden = false;
+    } else {
+      const paused = Boolean(inDay && state.voteLockPaused);
+      el.hidden = !paused;
+      if (paused) el.textContent = '⏸ Đã tạm dừng đếm ngược — có người đổi phiếu thì chạy lại, hoặc ấn Chốt bên dưới.';
+      if (cancel) cancel.hidden = true;
+    }
+    if (active || deadlineActive) {
       if (!hostTickTimer) {
         const tick = () => {
           hostTickTimer = null;
-          if (!state || !isHost || !state.voteLock || state.phase !== 'DAY') return;
-          el.textContent = hostCountdownText();
+          if (!state || !isHost || state.phase !== 'DAY') return;
+          const lockNow = Boolean(state.voteLock);
+          const ddNow = Boolean(state.dayDeadline);
+          if (!lockNow && !ddNow) return;
+          if (lockNow) el.textContent = hostCountdownText();
+          if (ddNow && dayEl) {
+            dayEl.textContent = hostDeadlineText();
+            dayEl.classList.toggle('is-urgent', state.dayDeadline.endsAt - Date.now() <= 30000);
+          }
           hostTickTimer = setTimeout(tick, 250);
         };
         hostTickTimer = setTimeout(tick, 250);
       }
-    } else {
-      if (hostTickTimer) {
-        clearTimeout(hostTickTimer);
-        hostTickTimer = null;
-      }
-      const paused = Boolean(state && state.phase === 'DAY' && state.voteLockPaused);
-      el.hidden = !paused;
-      if (paused) el.textContent = '⏸ Đã tạm dừng đếm ngược — có người đổi phiếu thì chạy lại, hoặc ấn Chốt bên dưới.';
-      if (cancel) cancel.hidden = true;
+    } else if (hostTickTimer) {
+      clearTimeout(hostTickTimer);
+      hostTickTimer = null;
     }
   }
 
@@ -3064,10 +3365,9 @@ window.WerewolfGame = (() => {
         peekTimer = null;
       }
       if (show) {
+        // Cố ý KHÔNG phát âm thanh khi lật thẻ: tiếng động sẽ làm lộ người đang xem vai.
         window.AudioEngine.unlock();
-        window.AudioEngine.playCardFlip();
         window.SceneFX.sparkleAtElement(document.getElementById('ww-pl-toggle-card'));
-        setTimeout(() => window.AudioEngine.playRoleReveal(), 150);
         // Giữ thẻ ≥ 700 ms mới tính là đã xem tin mới.
         if (cardHasNews) peekTimer = setTimeout(markCardSeen, 700);
       }
@@ -3295,13 +3595,25 @@ window.WerewolfGame = (() => {
     return `⏳ Không ai bị treo cổ — sang đêm sau ${left} giây — muốn đổi phiếu thì đổi ngay!`;
   }
 
+  function playerDeadlineText() {
+    const left = (clientDayDeadlineEnd - Date.now()) / 1000;
+    return `⏰ Còn ${formatClock(left)} để bỏ phiếu${state.revoteUsed ? ' (vòng bỏ phiếu lại)' : ''}`;
+  }
+
   function ensurePlayerTick() {
     if (playerTickTimer) return;
     const tick = () => {
       playerTickTimer = null;
       const el = document.getElementById('ww-pl-vote-countdown');
-      if (!state || !state.voteLock || !el) return;
-      el.textContent = voteCountdownText();
+      const dl = document.getElementById('ww-pl-day-timer');
+      const lockOn = Boolean(state && state.voteLock && el);
+      const dlOn = Boolean(state && state.dayDeadline && dl);
+      if (!lockOn && !dlOn) return;
+      if (lockOn) el.textContent = voteCountdownText();
+      if (dlOn) {
+        dl.textContent = playerDeadlineText();
+        dl.classList.toggle('is-urgent', clientDayDeadlineEnd - Date.now() <= 30000);
+      }
       playerTickTimer = setTimeout(tick, 250);
     };
     playerTickTimer = setTimeout(tick, 250);
@@ -3357,6 +3669,15 @@ window.WerewolfGame = (() => {
         rv.className = 'hint';
         rv.textContent = '🔁 Vòng bỏ phiếu lại: lần này hòa nữa thì không ai bị treo cổ.';
         area.appendChild(rv);
+      }
+
+      if (state.dayDeadline) {
+        const dl = document.createElement('p');
+        dl.id = 'ww-pl-day-timer';
+        dl.className = 'day-timer';
+        dl.textContent = playerDeadlineText();
+        area.appendChild(dl);
+        ensurePlayerTick();
       }
 
       if (state.voteLock) {

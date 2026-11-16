@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#070912">
   <meta name="description" content="Hội Quán Ma Sói & Gián Điệp — party game offline cho hội bạn. Bot Quản Trò đọc tiếng Việt, chia vai, theo dõi vote và phán quyết kết quả. Không cần người làm quản trò.">
-  <title>Hội Quán Ma Sói &amp; Gián Điệp (v3.2) — Party Game Offline</title>
+  <title>Hội Quán Ma Sói &amp; Gián Điệp (v3.3) — Party Game Offline</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="assets/icons/icon-180.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -41,7 +41,7 @@
       <div class="brand">
         <span class="brand-icon" aria-hidden="true">🌙</span>
         <div>
-          <p class="brand-title">Hội Quán Party Game <span class="version-badge">v3.2</span></p>
+          <p class="brand-title">Hội Quán Party Game <span class="version-badge">v3.3</span></p>
           <p class="brand-sub">Một phòng cố định cho cả hội • Lỡ tắt app mở lại là vào đúng ván</p>
         </div>
       </div>
@@ -281,6 +281,13 @@
             <button type="button" id="ww-host-auto-roles" class="btn btn-ghost btn-sm">Gợi ý tự động</button>
           </div>
           <div id="ww-host-role-config" class="role-config-grid"></div>
+          <div class="settings-box">
+            <div class="panel-header">
+              <h3>⚙️ Cài đặt ván</h3>
+              <button type="button" id="ww-host-settings-reset" class="btn btn-ghost btn-sm">Mặc định</button>
+            </div>
+            <div id="ww-host-settings" class="settings-list"></div>
+          </div>
           <div class="config-footer">
             <p id="ww-host-role-total" class="role-total-note"></p>
             <button type="button" id="ww-host-start-btn" class="btn btn-primary btn-lg btn-block" disabled>
@@ -358,6 +365,7 @@
                   <span id="ww-host-vote-progress" class="ready-summary">0/0 đã vote</span>
                 </div>
                 <ul id="ww-host-vote-tally" class="vote-tally-list"></ul>
+                <p id="ww-host-day-timer" class="day-timer" hidden></p>
                 <p id="ww-host-vote-countdown" class="vote-countdown" hidden></p>
                 <button type="button" id="ww-host-finalize-vote" class="btn btn-primary btn-block" hidden>
                   ⚖️ Chốt treo cổ người dẫn đầu phiếu
@@ -782,7 +790,7 @@
   </main>
 
   <footer class="app-footer">
-    <p>Hội Quán Ma Sói &amp; Gián Điệp • Phiên bản <strong>v3.2</strong> • Một phòng cố định cho cả hội</p>
+    <p>Hội Quán Ma Sói &amp; Gián Điệp • Phiên bản <strong>v3.3</strong> • Một phòng cố định cho cả hội</p>
     <p class="footer-note">Lưu app vào Màn hình chính • Bot lo quản trò • Rớt mạng thì mở lại là vào đúng ván</p>
   </footer>
 
@@ -873,7 +881,7 @@
 
   <dialog id="dialog-rules" closedby="any" aria-labelledby="dialog-rules-title">
     <div class="dialog-header">
-      <h2 id="dialog-rules-title">📖 Luật chơi nhanh (v3.2)</h2>
+      <h2 id="dialog-rules-title">📖 Luật chơi nhanh (v3.3)</h2>
       <button type="button" id="btn-close-rules" class="btn btn-ghost btn-sm" aria-label="Đóng">✕</button>
     </div>
     <div class="dialog-body-stack rules-content">

@@ -952,10 +952,9 @@ window.SpyGame = (() => {
       if (cardRevealed === show) return;
       cardRevealed = show;
       if (show && mySecret) {
+        // Cố ý KHÔNG phát âm thanh khi lật thẻ: tiếng động sẽ làm lộ người đang xem thẻ.
         window.AudioEngine.unlock();
-        window.AudioEngine.playCardFlip();
         window.SceneFX.sparkleAtElement(document.getElementById('spy-toggle-card'));
-        setTimeout(() => window.AudioEngine.playRoleReveal(), 150);
       }
       renderSecretCard();
     });

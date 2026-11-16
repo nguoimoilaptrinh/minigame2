@@ -1,5 +1,5 @@
 // Service worker Hội Quán — app shell mở nhanh, nhưng luôn ưu tiên bản mới từ mạng.
-const CACHE = 'hoiquan-v3.2-2';
+const CACHE = 'hoiquan-v3.3-1';
 
 const PRECACHE = [
   './',
